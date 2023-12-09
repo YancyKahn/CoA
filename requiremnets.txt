@@ -1,0 +1,15 @@
+openai==0.28
+google-generativeai
+wandb==0.12.18
+matplotlib
+seaborn
+scikit-learn
+pandas
+fschat
+anthropic
+transformers
+ipykernel
+accelerate
+urllib3==1.25.11
+google-api-python-client
+openpyxl
