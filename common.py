@@ -153,7 +153,7 @@ def get_mr_init_chain(args, model):
     else:
         extracted_mr_init_chain_list = config.DEFAULT_MR_CHAIN_LIST
 
-    return extract_json_for_mr_init_chain
+    return extracted_mr_init_chain_list
 
 
 def process_mr_response(prompt_list, response_list, toxic_scores, toxic_scores_prompt, judge_scores, methods="SFTS", topk=1):
