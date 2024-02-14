@@ -36,6 +36,7 @@ def label_prompt(args, prompt_list):
     batch_size = args.batch_size
     
     label = []
+    toxicity = []
 
     for i in range(0, len(prompt_list), batch_size):
         print(f"Processing {i} to {i+batch_size} prompts.")
@@ -47,19 +48,20 @@ def label_prompt(args, prompt_list):
         toxic_scores = toxicd.get_batched_toxicity(batch_data)
 
         label.extend([score["type"] for score in toxic_scores])
+        toxicity.extend([score["toxicity"] for score in toxic_scores])
 
         for prompt, toxic in zip(batch_data, toxic_scores):
             print(f"Prompt: {prompt}, Toxicity: {toxic['type']}")
 
-    return label
+    return label, toxicity
 
 def main(args):
 
     prompt_list = get_data(args.data_name)
 
-    label = label_prompt(args, prompt_list)
+    label, toxicity = label_prompt(args, prompt_list)
 
-    result = pd.DataFrame({"goal": prompt_list, "category": label})
+    result = pd.DataFrame({"goal": prompt_list, "category": label, "toxicity": toxicity})
 
     result.to_csv(args.output_path, index=False)
 

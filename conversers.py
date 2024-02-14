@@ -1,9 +1,10 @@
 
 import common
-from language_models import GPT, Claude, PaLM, HuggingFace, OpenSourceModelAPI
+from language_models import GPT, Claude, PaLM, HuggingFace, OpenSourceModelAPI, CommercialAPI
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from config import ATTACK_TEMP, TARGET_TEMP, ATTACK_TOP_P, TARGET_TOP_P
+from collections import defaultdict
 
 # This file is modified based on the https://raw.githubusercontent.com/patrickrchao/JailbreakingLLMs/main/conversers.py
 
@@ -64,22 +65,16 @@ class AttackLM():
         """
 
         assert len(convs_list) == len(
-            prompt_list), "Mismatch between number of conversations and prompts."
+            prompt_list), "Mismatch between number of conversations and prompts. Conv List:" + str(len(convs_list)) + " Prompt List:" + str(len(prompt_list))
 
         batchsize = len(convs_list)
         indices_to_regenerate = list(range(batchsize))
         valid_outputs = [None] * batchsize
 
-        # Initalize the attack model's generated output to match format
-        if len(convs_list[0].messages) == 0:
-            # init_message = """{\"Round\": \"1:\" {\"improvement\": \"\",\"prompt\": \""""
-            init_message = """{\"Round 1\": {\"improvement\": \""""
-        else:
-            init_message = """{\"Round 1\": {\"improvement\": \""""
-
         full_prompts = []
         # Add prompts and initial seeding messages to conversations (only once)
         for conv, prompt in zip(convs_list, prompt_list):
+            conv = conv.copy()
             conv.append_message(conv.roles[0], prompt)
             # Get prompts
             if "gpt" in self.model_name:
@@ -90,9 +85,11 @@ class AttackLM():
             elif "api" in self.model_name:
                 conv.append_message(conv.roles[1], None)
                 full_prompts.append(conv.get_prompt())
+            elif "chatglm" in self.model_name:
+                full_prompts.append(conv)
             else:
-                conv.append_message(conv.roles[1], init_message)
-                full_prompts.append(conv.get_prompt()[:-len(conv.sep2)])
+                conv.append_message(conv.roles[1], None)
+                full_prompts.append(conv.get_prompt())
 
         for attempt in range(self.max_n_attack_attempts):
             # Subset conversations based on indices to regenerate
@@ -100,20 +97,20 @@ class AttackLM():
                                    for i in indices_to_regenerate]
 
             # Generate outputs
-            outputs_list = self.model.batched_generate_by_thread(full_prompts_subset,
+            outputs_list, _ = self.model.batched_generate_by_thread(full_prompts_subset,
                                                                  max_n_tokens=self.max_n_tokens,
                                                                  temperature=self.temperature,
                                                                  top_p=self.top_p
                                                                  )
-
             # Check for valid outputs and update the list
             new_indices_to_regenerate = []
             for i, full_output in enumerate(outputs_list):
                 orig_index = indices_to_regenerate[i]
 
-                # if gpt or vicuna-api is not add init_message
-                if "gpt" not in self.model_name and "api" not in self.model_name:
-                    full_output = init_message + full_output
+                if full_output == "" or full_output is None:
+                    new_indices_to_regenerate.append(orig_index)
+                    continue
+
 
                 mr_conv, evaluation, json_str = common.extract_json_for_mr_init_chain(
                     full_output)
@@ -137,7 +134,7 @@ class AttackLM():
 
         return valid_outputs
 
-    def get_attack(self, convs_list, prompts_list):
+    def get_attack(self, convs_list, prompts_list, pre_prompt_sem, sem_judger, target):
         """
         Generates responses for a batch of conversations and prompts using a language model. 
         Only valid outputs in proper JSON format are returned. If an output isn't generated 
@@ -157,6 +154,9 @@ class AttackLM():
         batchsize = len(convs_list)
         indices_to_regenerate = list(range(batchsize))
         valid_outputs = [None] * batchsize
+        candidate_outputs = [None] * batchsize
+        candidate_max_sem = [0] * batchsize
+        theta = 0.1
 
         # Initalize the attack model's generated output to match format
         if len(convs_list[0].messages) == 0:
@@ -165,6 +165,7 @@ class AttackLM():
             init_message = """{\"improvement\": \""""
 
         full_prompts = []
+
         # Add prompts and initial seeding messages to conversations (only once)
         for conv, prompt in zip(convs_list, prompts_list):
             conv.append_message(conv.roles[0], prompt)
@@ -177,9 +178,12 @@ class AttackLM():
             elif "api" in self.model_name:
                 conv.append_message(conv.roles[1], None)
                 full_prompts.append(conv.get_prompt())
+            elif "zhipu" in self.model_name:
+                full_prompts.append(conv)
             else:
                 conv.append_message(conv.roles[1], init_message)
-                full_prompts.append(conv.get_prompt()[:-len(conv.sep2)])
+                full_prompts.append(conv.get_prompt())
+
 
         for attempt in range(self.max_n_attack_attempts):
             # Subset conversations based on indices to regenerate
@@ -187,7 +191,7 @@ class AttackLM():
                                    for i in indices_to_regenerate]
 
             # Generate outputs
-            outputs_list = self.model.batched_generate(full_prompts_subset,
+            outputs_list, _ = self.model.batched_generate_by_thread(full_prompts_subset,
                                                        max_n_tokens=self.max_n_tokens,
                                                        temperature=self.temperature,
                                                        top_p=self.top_p
@@ -203,17 +207,29 @@ class AttackLM():
             for i, full_output in enumerate(outputs_list):
                 orig_index = indices_to_regenerate[i]
 
+                if full_output == "" or full_output is None:
+                    new_indices_to_regenerate.append(orig_index)
+                    continue
+
                 # if gpt or vicuna-api is not add init_message
-                if "gpt" not in self.model_name and "api" not in self.model_name:
-                    full_output = init_message + full_output
+                # if "gpt" not in self.model_name and "api" not in self.model_name:
+                #     full_output = init_message + full_output
 
                 attack_dict, json_str = common.extract_json(full_output)
 
                 # the response i not [new prompt]
-                if attack_dict is not None and attack_dict["prompt"] != "[new prompt]":
-                    valid_outputs[orig_index] = attack_dict
-                    # Update the conversation with valid generation
-                    convs_list[orig_index].update_last_message(json_str)
+                if attack_dict is not None and attack_dict["prompt"] != "[new prompt]" and attack_dict["prompt"] != "[新提示]":
+                    prompt_sem = sem_judger.batched_compute_similarity(target, [attack_dict["prompt"]])
+                    if prompt_sem[0] > candidate_max_sem[orig_index]:
+                        candidate_outputs[orig_index] = attack_dict
+                        candidate_max_sem[orig_index] = prompt_sem[0]
+
+                    if prompt_sem[0] < pre_prompt_sem[orig_index] * (1 - theta):
+                        new_indices_to_regenerate.append(orig_index)
+                    else:
+                        valid_outputs[orig_index] = attack_dict
+                        # Update the conversation with valid generation
+                        convs_list[orig_index].update_last_message(json_str)
                 else:
                     new_indices_to_regenerate.append(orig_index)
 
@@ -223,6 +239,10 @@ class AttackLM():
             # If all outputs are valid, break
             if len(indices_to_regenerate) == 0:
                 break
+        
+        for i in range(len(valid_outputs)):
+            if valid_outputs[i] is None:
+                valid_outputs[i] = candidate_outputs[i]
 
         if any([output for output in valid_outputs if output is None]):
             print(
@@ -259,38 +279,71 @@ class TargetLM():
             self.model = preloaded_model
             _, self.template = get_model_path_and_template(model_name)
 
-    def get_response(self, convs_list):
+    def get_response(self, convs_list, is_get_attention=False):
         full_prompts = convs_list
+        retry_attempts = 5
 
-        retry_times = 3
+        indices_to_regenerate = list(range(len(full_prompts)))
+        valid_outputs = [None] * len(full_prompts)
+        valid_attentions = [None] * len(full_prompts)
 
-        while retry_times > 0:
+        for attamp in range(retry_attempts):
 
-            try:
-                retry_times -= 1
-                outputs_list = self.model.batched_generate(full_prompts,
-                                                           max_n_tokens=self.max_n_tokens,
-                                                           temperature=self.temperature,
-                                                           top_p=self.top_p
-                                                           )
-                break
-            except Exception as e:
-                print("Error at get_response: " + e)
-                outputs_list = [""] * len(full_prompts)
+            full_prompts_subset = [full_prompts[i]
+                                      for i in indices_to_regenerate]
+            
+            outputs_list, attention_list = self.model.batched_generate_by_thread(full_prompts_subset,
+                                                              max_n_tokens=self.max_n_tokens,
+                                                                temperature=self.temperature,
+                                                                top_p=self.top_p,
+                                                                is_get_attention=is_get_attention)
+            
+            if outputs_list is None:
+                print("Error in generating output.")
+                indices_to_regenerate = [indices_to_regenerate[0]]
                 continue
-        return outputs_list
+
+            # Check for valid outputs and update the list
+
+            new_indices_to_regenerate = []
+
+            for i, full_output in enumerate(outputs_list):
+                orig_index = indices_to_regenerate[i]
+
+                if full_output is not None:
+                    # Update the conversation with valid generation
+                    valid_outputs[orig_index] = full_output
+                    if is_get_attention:
+                        valid_attentions[orig_index] = attention_list[i]
+                else:
+                    new_indices_to_regenerate.append(orig_index)
+
+            # Update indices to regenerate for the next iteration
+            indices_to_regenerate = new_indices_to_regenerate
+
+            # If all outputs are valid, break
+            if len(indices_to_regenerate) == 0:
+                break
+
+        if any([output for output in valid_outputs if output is None]):
+            print(
+                f"Failed to generate output after {self.max_n_attack_attempts} attempts. Terminating.")
+            
+        return valid_outputs, attention_list
 
 
 def load_indiv_model(model_name, device=None):
     model_path, template = get_model_path_and_template(model_name)
-    if model_name in ["gpt-3.5-turbo", "gpt-4", "text-davinci-003", "gpt-3.5-turbo-instruct"]:
+    if model_name in ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "text-davinci-003", "gpt-3.5-turbo-instruct"]:
         lm = GPT(model_name)
     elif model_name in ["claude-2", "claude-instant-1"]:
         lm = Claude(model_name)
     elif model_name in ["palm-2"]:
         lm = PaLM(model_name)
-    elif model_name in ["vicuna-api", "llama2-api"]:
+    elif model_name.endswith("-api"):
         lm = OpenSourceModelAPI(model_name)
+    elif model_name in ["zhipu", "douyin", "wenxinyiyan", "kuaishou", "baichuan"]:
+        lm = CommercialAPI(model_name)
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
@@ -329,9 +382,49 @@ def get_model_path_and_template(model_name):
             "path": "llama-2",
             "template": "llama-2"
         },
+        "chatglm-api": {
+            "path": "chatglm",
+            "template": "chatglm"
+        },
+        "chatglm2-api": {
+            "path": "chatglm-2",
+            "template": "chatglm-2"
+        },
+        "phi2-api": {
+            "path": "phi2",
+            "template": "phi2"
+        },
+        "zephyr-api": {
+            "path": "zephyr",
+            "template": "zephyr"
+        },
+        "baichuan-api": {
+            "path": "baichuan2-chat",
+            "template": "baichuan2-chat"
+        },
         "one-shot": {
             "path": "one_shot",
             "template": "one_shot"
+        },
+        "zhipu": {
+            "path": "zhipu",
+            "template": "zhipu"
+        },
+        "douyin": {
+            "path": "douyin",
+            "template": "douyin"
+        },
+        "wenxinyiyan": {
+            "path": "wenxinyiyan",
+            "template": "wenxinyiyan"
+        },
+        "kuaishou": {
+            "path": "kuaishou",
+            "template": "kuaishou"
+        },
+        "baichuan": {
+            "path": "baichuan",
+            "template": "baichuan"
         },
         "zero-shot": {
             "path": "zero_shot",
@@ -416,6 +509,10 @@ def get_model_path_and_template(model_name):
         "gpt-4": {
             "path": "gpt-4",
             "template": "gpt-4"
+        },
+        "gpt-4-turbo": {
+            "path": "gpt-4-turbo",
+            "template": "gpt-4-turbo"
         },
         "gpt-3.5-turbo": {
             "path": "gpt-3.5-turbo",

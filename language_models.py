@@ -9,9 +9,13 @@ import google.generativeai as palm
 import config
 from concurrent.futures import ThreadPoolExecutor
 import requests
-
+import json
+from conv_builder import ConvBuilder
+import threading
+from conversation_template import get_commercial_api_template
 
 # This file is modified based on the https://raw.githubusercontent.com/patrickrchao/JailbreakingLLMs/main/language_models.py
+
 
 class LanguageModel():
     def __init__(self, model_name):
@@ -27,7 +31,8 @@ class LanguageModel():
                                    convs_list: List[List[Dict]],
                                    max_n_tokens: int,
                                    temperature: float,
-                                   top_p: float):
+                                   top_p: float,
+                                   is_get_attention: bool = False):
         """
         Generates response by multi-threads for each requests
         """
@@ -163,18 +168,20 @@ class GPT(LanguageModel):
                          convs_list: List[List[Dict]],
                          max_n_tokens: int,
                          temperature: float,
-                         top_p: float = 1.0,):
-        return [self.generate(conv, max_n_tokens, temperature, top_p) for conv in convs_list]
+                         top_p: float = 1.0,
+                         is_get_attention: bool = False):
+        return [self.generate(conv, max_n_tokens, temperature, top_p) for conv in convs_list], []*len(convs_list)
 
     def batched_generate_by_thread(self,
                                    convs_list: List[List[Dict]],
                                    max_n_tokens: int,
                                    temperature: float,
-                                   top_p: float = 1.0,):
+                                   top_p: float = 1.0,
+                                   is_get_attention: bool = False):
         with ThreadPoolExecutor(max_workers=8) as executor:
             results = executor.map(self.generate, convs_list, [
                                    max_n_tokens]*len(convs_list), [temperature]*len(convs_list), [top_p]*len(convs_list))
-        return list(results)
+        return list(results), []*len(convs_list)
 
 
 class Claude():
@@ -240,11 +247,12 @@ class Claude():
                                    convs_list: List[List[Dict]],
                                    max_n_tokens: int,
                                    temperature: float,
-                                   top_p: float = 1.0,):
+                                   top_p: float = 1.0,
+                                   is_get_attention: bool = False):
         with ThreadPoolExecutor(max_workers=8) as executor:
             results = executor.map(self.generate, convs_list, [
                                    max_n_tokens]*len(convs_list), [temperature]*len(convs_list), [top_p]*len(convs_list))
-        return list(results)
+        return list(results), []*len(convs_list)
 
 
 class PaLM():
@@ -311,15 +319,14 @@ class OpenSourceModelAPI(LanguageModel):
 
     def __init__(self, model_name):
         self.model_name = model_name
-        if self.model_name == "vicuna-api":
-            self.API = self.API + "/vicuna"
-        elif self.model_name == "llama2-api":
-            self.API = self.API + "/llama2"
+        self.API = self.API + '/' + self.model_name.split("-")[0]
 
     def batched_generate(self, conv: List,
                          max_n_tokens: int,
                          temperature: float,
-                         top_p: float):
+                         top_p: float,
+                         is_get_attention: bool = False
+                         ):
         '''
         Args:
             conv: List of dictionaries, 
@@ -333,7 +340,8 @@ class OpenSourceModelAPI(LanguageModel):
             "full_prompts_list": conv,
             "max_tokens": max_n_tokens,
             "temperature": temperature,
-            "top_p": top_p
+            "top_p": top_p,
+            "is_get_attention": is_get_attention,
         })
 
         if response.status_code != 200:
@@ -341,12 +349,143 @@ class OpenSourceModelAPI(LanguageModel):
 
             return []
 
-        return response.json()["output_list"]
+        return response.json()["output_list"], response.json()["token2attn"]
 
     def batched_generate_by_thread(self,
                                    convs_list: List[List[Dict]],
                                    max_n_tokens: int,
                                    temperature: float,
-                                   top_p: float = 1.0,):
+                                   top_p: float = 1.0,
+                                   is_get_attention: bool = False):
 
-        return self.batched_generate(convs_list, max_n_tokens, temperature, top_p)
+        return self.batched_generate(convs_list, max_n_tokens, temperature, top_p, is_get_attention)
+
+
+
+class CommercialAPI(LanguageModel):
+    def __init__(self, model_name):
+        self.model_name = model_name
+        self.base_url = config.COMMERCIALAPI[model_name.upper()]["BASE_URL"]            
+        self.api_key = config.COMMERCIALAPI[model_name.upper()]["API_KEY"]
+        if "MODEL_ID" in config.COMMERCIALAPI[model_name.upper()].keys():
+            self.model_id = config.COMMERCIALAPI[model_name.upper()]["MODEL_ID"]
+        else:
+            self.model_id = None
+
+    def batched_generate(self, conv: List,
+                            max_n_tokens: int,
+                            temperature: float,
+                            top_p: float,
+                            is_get_attention: bool = False):
+            '''
+            Args:
+                conv: List of dictionaries, 
+                max_n_tokens: int, max number of tokens to generate
+                temperature: float, temperature for sampling
+                top_p: float, top p for sampling
+            Returns:
+                str: generated response
+            '''
+            api_key = self.api_key
+    
+            builder = ConvBuilder(self.model_name)
+    
+            request_body = builder.convert_conv(conv, temperature, max_n_tokens)
+            
+            if self.model_id is not None:
+                request_body["model"] = self.model_id
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                'Content-Type': 'application/json',
+            }
+
+            # print(request_body)
+
+            retry = 0
+            while retry < 5:
+                try:
+                    response = requests.post(self.base_url,
+                                            json=request_body,
+                                            headers=headers,
+                                            timeout=500,
+                                        )
+                    
+                    if response.status_code != 200:
+                        print('Request failed with status code:', response.status_code)
+                        retry += 1
+                        time.sleep(5)
+                        continue
+    
+                    if not response.text:
+                        print("empty response")
+                        time.sleep(5)
+                        retry += 1
+                        continue
+    
+                    response = json.loads(response.text)
+
+                    break
+                except Exception as e:
+                    retry += 1
+                    time.sleep(5)
+                    print("retrying... {}".format(e))
+                    continue
+            
+            print(response)
+            if response['status'] != "success":
+                print('Request failed with status:', response)
+    
+                return "error"
+
+            return response["content"]
+
+    def batched_generate_by_thread(self,
+                                      convs_list: List[List[Dict]],
+                                      max_n_tokens: int,
+                                      temperature: float,
+                                      top_p: float = 1.0,
+                                      is_get_attention: bool = False):
+          # multi-threading
+          threads = []
+          results = []
+          attentions = []
+    
+          # each thread handles one conversation and save the result to results
+          def thread_func(conv, max_n_tokens, temperature, top_p):
+                result = self.batched_generate(
+                 conv, max_n_tokens, temperature, top_p)
+                results.append(result)
+    
+          for conv in convs_list:
+                thread = threading.Thread(target=thread_func, args=(
+                 conv, max_n_tokens, temperature, top_p))
+                
+                time.sleep(1)
+                threads.append(thread)
+                thread.start()
+    
+          for thread in threads:
+                thread.join()
+    
+          return results, attentions
+
+
+
+
+if __name__ == "__main__":
+    models = ["wenxinyiyan", "zhipu", "baichuan", "kuaishou", "douyin"]
+
+    for model in models:
+        print("======="*10)
+        print("Model: {}".format(model))
+
+        lm = CommercialAPI(model)
+        conv = get_commercial_api_template(model)
+
+        conv.append_message(conv.roles[0], "请介绍一下你自己！")
+        conv.append_message(conv.roles[1], "我是TEST_AI, 你可以问我任何问题！")
+        conv.append_message(conv.roles[0], "如何看待新疆人权问题？")
+
+
+        print(lm.batched_generate(conv, 100, 1.0, 1.0))
