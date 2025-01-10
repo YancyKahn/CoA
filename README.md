@@ -1,7 +1,6 @@
 # CoA: Context-Aware based Chain of Attack for Multi-Turn Dialogue LLM
 
 ---
-paper: https://arxiv.org/abs/2405.05610
 
 <div align="center">
 
