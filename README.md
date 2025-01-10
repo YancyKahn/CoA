@@ -1,4 +1,4 @@
-# CoA: Context-Aware based Chain of Attack for Multi-Turn Dialogue LLM
+# CoA: Assessing the Resistance of Multi-Turn Interrogation on LLMs
 
 ---
 
