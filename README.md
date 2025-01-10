@@ -4,13 +4,12 @@
 
 <div align="center">
 
-![](https://camo.githubusercontent.com/83d3746e5881c1867665223424263d8e604df233d0a11aae0813e0414d433943/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f6c6963656e73652d4d49542d626c75652e737667)
 
 </div align="center">
 
  Large language models (LLMs) have achieved remarkable performance in various natural language processing tasks, especially in dialogue systems. However, LLMs may also pose security and ethical threats, such as generating harmful or biased responses, which can compromise the quality and reliability of dialogue systems.  CoA leverages the context of the dialogue and the model’s reaction to dynamically generate and execute a series of adaptive attack actions.
 
-![Overall Stucture](assets/overall-new.png)
+![](assets/overall.png)
 
 ## Dependencies
 
