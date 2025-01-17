@@ -1,4 +1,4 @@
-# CoA: Assessing the Resistance of Multi-Turn Interrogation on LLMs
+# Chain of Attack: a Semantic-Driven Contextual Multi-Turn attacker for LLM
 
 ---
 
@@ -9,7 +9,7 @@
 
  Large language models (LLMs) have achieved remarkable performance in various natural language processing tasks, especially in dialogue systems. However, LLMs may also pose security and ethical threats, such as generating harmful or biased responses, which can compromise the quality and reliability of dialogue systems.  CoA leverages the context of the dialogue and the model’s reaction to dynamically generate and execute a series of adaptive attack actions.
 
-![](assets/overall.png)
+![](assets/overall-new.png)
 
 ## Dependencies
 
